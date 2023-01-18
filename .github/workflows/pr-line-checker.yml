@@ -1,0 +1,85 @@
+name: PR line checker
+
+on:
+  pull_request:
+    types: [ opened, ready_for_review ]
+    
+env:
+  NORMAL_LINES: 100
+  HEAVY_LINES: 1000
+  LIGHT_LABEL_NAME: Light PR
+  NORMAL_LABEL_NAME: Normal PR
+  HEAVY_LABEL_NAME: Heavy PR
+
+jobs:
+  pr-line-checker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v2
+        with:
+          node-version: 19
+      - run: npm install minimatch
+      - name: Set excluded patterns
+        uses: actions/github-script@v4
+        id: excluded-patterns
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            return [
+              "resources/**",
+              "Pods/**",
+              "frameworks/**",
+              "**/*.xib",
+              "**/*.graphql",
+              "**/*GraphQLClient.swift",
+              "*.xcodeproj/**",
+              "*.xcworkspace/**",
+              "Podfile",
+              "Podfile.lock",
+              ".github/**",
+              ".git/**"
+            ]
+      - name: Get changed lines
+        uses: actions/github-script@v4
+        id: changed-lines
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const changed_files = await github.pulls.listFiles({
+                owner: context.payload.repository.owner.login,
+                repo: context.payload.repository.name,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100
+            });
+
+            const changes_and_filenames = changed_files.data.map(c => ({ changes: c.changes, filename: c.filename }))
+            const excluded_patterns = ${{ steps.excluded-patterns.outputs.result }}
+
+            const minimatch = require('minimatch')
+            const filterd_files = changes_and_filenames.filter(f => !excluded_patterns.some(p => minimatch(f.filename, p)))
+            const changed_lines = filterd_files.map(f => f.changes).reduce((acc, v) => acc + v, 0)
+            
+            return changed_lines
+      - name: Update labels by changed lines
+        uses: actions/github-script@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const size_labels = ["${{ env.LIGHT_LABEL_NAME }}", "${{ env.NORMAL_LABEL_NAME }}", "${{ env.HEAVY_LABEL_NAME }}"]
+            const updating_label_names = context.payload.pull_request.labels.filter(pr_label => !size_labels.some(name => pr_label.name === name)).map(label => label.name)
+            const changed_lines = ${{ steps.changed-lines.outputs.result }}
+            
+            if (changed_lines >= ${{ env.HEAVY_LINES }}) {
+              updating_label_names.push("${{ env.HEAVY_LABEL_NAME }}")
+            } else if (changed_lines >= ${{ env.NORMAL_LINES }}) {
+              updating_label_names.push("${{ env.NORMAL_LABEL_NAME }}")
+            } else {
+              updating_label_names.push("${{ env.LIGHT_LABEL_NAME }}")
+            }
+            
+            await github.issues.setLabels({
+              owner: context.payload.repository.owner.login,
+              repo: context.payload.repository.name,
+              issue_number: context.payload.pull_request.number,
+              labels: updating_label_names,
+            });
