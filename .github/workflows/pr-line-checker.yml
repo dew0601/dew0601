@@ -15,9 +15,9 @@ jobs:
   pr-line-checker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v2
+      - uses: actions/setup-node@v3
         with:
-          node-version: 19.4
+          node-version: 14
       - run: npm install minimatch
       - name: Set excluded patterns
         uses: actions/github-script@v4
