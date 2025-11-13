@@ -86,19 +86,7 @@ jobs:
             const prDescription = process.env.PR_DESCRIPTION || 'No description provided';
 
             // Call Claude API
-            const response = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01'
-              },
-              body: JSON.stringify({
-                model: 'claude-3-5-sonnet-20241022',
-                max_tokens: 4096,
-                messages: [{
-                  role: 'user',
-                  content: `You are an expert code reviewer. Please review the following pull request and provide constructive feedback.
+            const prompt = `You are an expert code reviewer. Please review the following pull request and provide constructive feedback.
 
 PR Title: ${prTitle}
 PR Description: ${prDescription}
@@ -112,7 +100,21 @@ Please provide:
 3. **Best Practices**: Suggestions for code quality improvements
 4. **Positive Aspects**: What was done well
 
-Format your response in clear, markdown-formatted sections.`
+Format your response in clear, markdown-formatted sections.`;
+
+            const response = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+              },
+              body: JSON.stringify({
+                model: 'claude-3-5-sonnet-20241022',
+                max_tokens: 4096,
+                messages: [{
+                  role: 'user',
+                  content: prompt
                 }]
               })
             });
