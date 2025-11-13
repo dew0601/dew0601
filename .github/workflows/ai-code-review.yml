@@ -1,0 +1,152 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  ai-code-review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Get PR diff
+        id: pr-diff
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100
+            });
+
+            // Filter out certain file types
+            const filteredFiles = files.filter(file => {
+              const excludePatterns = [
+                /^package-lock\.json$/,
+                /^yarn\.lock$/,
+                /\.min\.js$/,
+                /\.map$/,
+                /\.(png|jpg|jpeg|gif|svg|ico)$/i
+              ];
+              return !excludePatterns.some(pattern => pattern.test(file.filename));
+            });
+
+            // Limit the number of files to review
+            const maxFiles = 20;
+            const filesToReview = filteredFiles.slice(0, maxFiles);
+
+            let diffContent = '';
+            for (const file of filesToReview) {
+              diffContent += `\n\n## File: ${file.filename}\n`;
+              diffContent += `Status: ${file.status}\n`;
+              diffContent += `Changes: +${file.additions} -${file.deletions}\n`;
+              if (file.patch) {
+                diffContent += `\`\`\`diff\n${file.patch}\n\`\`\`\n`;
+              }
+            }
+
+            return diffContent;
+
+      - name: AI Code Review with Claude
+        id: ai-review
+        uses: actions/github-script@v7
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_DIFF: ${{ steps.pr-diff.outputs.result }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_DESCRIPTION: ${{ github.event.pull_request.body }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const apiKey = process.env.ANTHROPIC_API_KEY;
+
+            if (!apiKey) {
+              console.log('Warning: ANTHROPIC_API_KEY not found in secrets');
+              return 'API key not configured';
+            }
+
+            const prDiff = process.env.PR_DIFF;
+            const prTitle = process.env.PR_TITLE;
+            const prDescription = process.env.PR_DESCRIPTION || 'No description provided';
+
+            // Call Claude API
+            const response = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+              },
+              body: JSON.stringify({
+                model: 'claude-3-5-sonnet-20241022',
+                max_tokens: 4096,
+                messages: [{
+                  role: 'user',
+                  content: `You are an expert code reviewer. Please review the following pull request and provide constructive feedback.
+
+PR Title: ${prTitle}
+PR Description: ${prDescription}
+
+Changes:
+${prDiff}
+
+Please provide:
+1. **Summary**: Brief overview of the changes
+2. **Potential Issues**: Any bugs, security concerns, or problematic patterns
+3. **Best Practices**: Suggestions for code quality improvements
+4. **Positive Aspects**: What was done well
+
+Format your response in clear, markdown-formatted sections.`
+                }]
+              })
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error:', errorText);
+              return `Error calling Claude API: ${response.status} ${response.statusText}`;
+            }
+
+            const data = await response.json();
+            return data.content[0].text;
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const reviewComment = `${{ steps.ai-review.outputs.result }}`;
+
+            if (reviewComment.includes('API key not configured')) {
+              console.log('Skipping comment - API key not configured');
+              return;
+            }
+
+            if (reviewComment.includes('Error calling Claude API')) {
+              console.log('Skipping comment - API error occurred');
+              return;
+            }
+
+            // Post the review as a comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `## 🤖 AI Code Review (Claude)\n\n${reviewComment}\n\n---\n*This review was automatically generated by Claude AI*`
+            });
